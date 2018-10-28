@@ -10,10 +10,12 @@ All games are developed using Arduino.
 Learn more about Arduino [HERE](https://www.arduino.cc/en/Guide/HomePage)
 
 ## Games
-### Showcased games by tech team
+### Showcased by tech team
 * Fast & Furious
 * Light Sabre Battle
 * Wizard Duel
+
+### Developed by participants
 
 ## Team
 ESCENDO 2018 Tech Team is headed by [Chow Siew Teng](https://github.com/siewteng).
