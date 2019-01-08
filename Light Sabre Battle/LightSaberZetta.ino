@@ -49,6 +49,13 @@
 #define BATTERY_SAFE 1      // battery monitoring (1 - allow, 0 - disallow)
 
 #define DEBUG 1             // debug information in Serial (1 - allow, 0 - disallow)
+
+#define gxoffset 19
+#define gyoffset 15
+#define gzoffset 17
+#define axoffset 14
+#define ayoffset 40
+#define azoffset 63
 // ---------------------------- SETTINGS -------------------------------
 
 #define LED_PIN 7
@@ -59,7 +66,7 @@
 #define BTN_LED 4
 #define ARDUINO_RX 5
 #define ARDUINO_TX 6
-
+#define BUZZ 8
 // -------------------------- LIBS ---------------------------
 #include <avr/pgmspace.h>   // PROGMEM library
 #include "Wire.h"
@@ -230,6 +237,11 @@ void on_off_sound() {
         if (HUMmode) {
           noToneAC();
           mp3.playSpecific(folderName, Hum);
+
+      ////////////////////////////////////////////////////
+          //tone(BUZZ, 30);
+      ////////////////////////////////////////////////////
+
         } else {
           mp3.playStop();
         }
@@ -257,12 +269,20 @@ void on_off_sound() {
         EEPROM.write(0, nowColor);   // write color in EEPROM
         EEPROM.write(1, HUMmode);    // write mode in EEPROM
       }
+
+
+      ////////////////////////////////////////////////////
+      //noTone(BUZZ);
+      ///////////////////////////////////////////////////
+      
     }
     ls_chg_state = 0;
   } 
 
-  if (((millis() - humTimer) > 9000) && bzzz_flag && HUMmode) {
+  if (((millis() - humTimer) > 1000) && bzzz_flag && HUMmode) {
     mp3.playSpecific(folderName, Hum);
+
+    tone(BUZZ, 30);
     humTimer = millis();
     swing_flag = 1;
     strike_flag = 0;
@@ -348,16 +368,16 @@ void swingTick() {
 
 void getFreq() {
   if (ls_state) {                                               // if GyverSaber is on
-    if (millis() - mpuTimer > 5000) {                            
+    if (millis() - mpuTimer > 300) {                            
       accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);       
 
       // find absolute and divide on 100
-      gyroX = abs(gx / 100);
-      gyroY = abs(gy / 100);
-      gyroZ = abs(gz / 100);
-      accelX = abs(ax / 100);
-      accelY = abs(ay / 100);
-      accelZ = abs(az / 100);
+      gyroX = abs(gx / 100) - gxoffset;
+      gyroY = abs(gy / 100) - gyoffset;
+      gyroZ = abs(gz / 100) - gzoffset;
+      accelX = abs(ax / 100) - axoffset;
+      accelY = abs(ay/ 100) - ayoffset;
+      accelZ = abs(az/ 100) - azoffset;
 
       // vector sum
       ACC = sq((long)accelX) + sq((long)accelY) + sq((long)accelZ);
@@ -381,8 +401,11 @@ void getFreq() {
          Serial.print(accelZ);
          Serial.println(";");
       
-      freq = (long)COMPL * COMPL / 1500;                        // parabolic tone change
-      freq = constrain(freq, 18, 300);                          
+      freq = (long)COMPL * COMPL / 150;                        // parabolic tone change
+
+         Serial.print(freq);
+
+      freq = constrain(freq, 0, 350);                          
       freq_f = freq * k + freq_f * (1 - k);                     // smooth filter
       mpuTimer = micros();                                     
     }
