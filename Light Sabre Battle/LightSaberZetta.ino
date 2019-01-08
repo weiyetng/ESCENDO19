@@ -1,33 +1,3 @@
-/*
-     SUPER-DUPER COOL ARDUINO BASED MULTICOLOR SOUND PLAYING LIGHTSABER!
-   HARDWARE:
-     Addressable LED strip (WS2811) to get any blade color and smooth turn on effect
-     MicroSD card module to play some sounds
-     IMU MPU6050 (accel + gyro) to generate hum. Frequency depends on angle velocity of blade
-     OR measure angle speed and play some hum sounds from SD
-   CAPABILITIES:
-     Smooth turning on/off with lightsaber-like sound effect
-     Randomly pulsing color (you can turn it off)
-     Sounds:
-       MODE 1: generated hum. Frequency depends on angle velocity of blade
-       MODE 2: hum sound from SD card
-         Slow swing - long hum sound (randomly from 4 sounds)
-         Fast swing - short hum sound (randomly from 5 sounds)
-     Bright white flash when hitting
-     Play one of 16 hit sounds, when hit
-       Weak hit - short sound
-       Hard hit - long "bzzzghghhdh" sound
-     After power on blade shows current battery level from 0 to 100 percent
-     Battery safe mode:
-       Battery is drain BEFORE TURNING ON: GyverSaber will not turn on, button LED will PULSE a couple of times
-       Battery is drain AFTER TURNING ON: GyverSaber will be turned off automatically
-   CONTROL BUTTON:
-     HOLD - turn on / turn off GyverSaber
-     TRIPLE CLICK - change color (red - green - blue - yellow - pink - ice blue)
-     QUINARY CLICK - change sound mode (hum generation - hum playing)
-     Selected color and sound mode stored in EEPROM (non-volatile memory)
-*/
-
 // ---------------------------- SETTINGS -------------------------------
 #define NUM_LEDS 40         // number of microcircuits WS2811 on LED strip (note: one WS2811 controls 3 LEDs!)
 #define BTN_TIMEOUT 800     // button hold delay, ms
@@ -36,8 +6,8 @@
 #define SWING_TIMEOUT 500   // timeout between swings
 #define SWING_L_THR 150     // swing angle speed threshold
 #define SWING_THR 300       // fast swing angle speed threshold
-#define STRIKE_THR 1500      // hit acceleration threshold
-#define STRIKE_S_THR 3200    // hard hit acceleration threshold
+#define STRIKE_THR 150      // hit acceleration threshold
+#define STRIKE_S_THR 320    // hard hit acceleration threshold
 #define FLASH_DELAY 80      // flash time while hit
 
 #define PULSE_ALLOW 1       // blade pulsation (1 - allow, 0 - disallow)
@@ -50,12 +20,6 @@
 
 #define DEBUG 1             // debug information in Serial (1 - allow, 0 - disallow)
 
-#define gxoffset 19
-#define gyoffset 15
-#define gzoffset 17
-#define axoffset 14
-#define ayoffset 40
-#define azoffset 63
 // ---------------------------- SETTINGS -------------------------------
 
 #define LED_PIN 7
@@ -63,7 +27,7 @@
 #define IMU_GND A1
 //#define SD_GND A0
 #define VOLT_PIN A2
-#define BTN_LED 4
+#define MPU_HIGH 4
 #define ARDUINO_RX 5
 #define ARDUINO_TX 6
 #define BUZZ 8
@@ -91,7 +55,7 @@ int16_t gx, gy, gz;
 unsigned long ACC, GYR, COMPL;
 int gyroX, gyroY, gyroZ, accelX, accelY, accelZ, freq, freq_f = 20;
 float k = 0.2;
-unsigned long humTimer = -9000, mpuTimer, nowTimer;
+unsigned long humTimer = -9000, mpuTimer = 0, nowTimer;
 int stopTimer;
 boolean bzzz_flag, ls_chg_state, ls_state;
 boolean btnState, btn_flag, hold_flag;
@@ -101,6 +65,7 @@ byte nowNumber;
 byte LEDcolor;  // 0 - red, 1 - green, 2 - blue, 3 - pink, 4 - yellow, 5 - ice blue
 byte nowColor, red, green, blue, redOffset, greenOffset, blueOffset;
 boolean eeprom_flag, swing_flag, swing_allow, strike_flag, HUMmode;
+int ax_offset, ay_offset, az_offset, gx_offset, gy_offset, gz_offset;
 float voltage;
 int PULSEOffset;
 // ------------------------------ VARIABLES ---------------------------------
@@ -112,6 +77,7 @@ int strike_s_time[8] = {270, 167, 186, 250, 252, 255, 250, 238};
 int swing_time[8] = {389, 372, 360, 366, 337};
 
 int swing_time_L[8] = {636, 441, 772, 702};
+
 int8_t volume = 0x1a;
 int8_t folderName = 01;
 int8_t Hum = 1;
@@ -125,15 +91,16 @@ void setup() {
   Wire.begin();
   Serial.begin(9600);
   mp3.begin();
+  accelgyro.initialize();
 
   // ---- НАСТРОЙКА ПИНОВ ----
   pinMode(BTN, INPUT_PULLUP);
   pinMode(IMU_GND, OUTPUT);
   //pinMode(SD_GND, OUTPUT);
-  //pinMode(BTN_LED, OUTPUT);
+  pinMode(MPU_HIGH, OUTPUT);
   digitalWrite(IMU_GND, 0);
   //digitalWrite(SD_GND, 0);
-  //digitalWrite(BTN_LED, 1); ----------------------------------------------------------------------------------------------------DIODE?
+  digitalWrite(MPU_HIGH, 1);
   // ---- НАСТРОЙКА ПИНОВ ----
 
   randomSeed(analogRead(2));    // starting point for random generator
@@ -153,11 +120,11 @@ void setup() {
   setColor(nowColor);
   byte capacity = voltage_measure();       // get battery level
   capacity = map(capacity, 100, 0, (NUM_LEDS / 2 - 1), 1);  // convert into blade lenght
-  if (DEBUG) {
+  /*if (DEBUG) {
     Serial.print("Battery: ");
     Serial.println(capacity);
   }
-
+  */
   for (char i = 0; i <= capacity; i++) {   // show battery level
     setPixel(i, red, green, blue);
     setPixel((NUM_LEDS - 1 - i), red, green, blue);
@@ -185,7 +152,6 @@ void loop() {
 
 void btnTick() {
   btnState = !digitalRead(BTN);
-  //btnColorState2 = !digitalRead(BTN2);
   if (btnState && !btn_flag) {
     if (DEBUG) Serial.println("BTN PRESS");
     btn_flag = 1;
@@ -227,77 +193,73 @@ void on_off_sound() {
   if (ls_chg_state) {                // if change flag
     if (!ls_state) {                 // if GyverSaber is turned off
       if (voltage_measure() > 10 || !BATTERY_SAFE) {
+        
         if (DEBUG) Serial.println(F("SABER ON"));
+                //get offset values of motion parameters
+        getOffset();
         mp3.playSpecific(folderName, 3);
         delay(200);
         light_up();
         delay(200); 
         bzzz_flag = 1;
         ls_state = true;               // remember that turned on
-        if (HUMmode) {
+        /*if (HUMmode) {
           noToneAC();
           mp3.playSpecific(folderName, Hum);
-
-      ////////////////////////////////////////////////////
-          //tone(BUZZ, 30);
-      ////////////////////////////////////////////////////
-
         } else {
           mp3.playStop();
-        }
+        }  */
+
+        tone(BUZZ, freq_f);
       } else {
         if (DEBUG) Serial.println(F("LOW VOLTAGE!"));
         for (int i = 0; i < 5; i++) {
-          digitalWrite(BTN_LED, 0);
+          //digitalWrite(BTN_LED, 0);
           delay(400);
-          digitalWrite(BTN_LED, 1);
+          //digitalWrite(BTN_LED, 1);
           delay(400);
         }
       }
     } else {                         // if GyverSaber is turned on
-      noToneAC();
-      bzzz_flag = 0;
-      mp3.playSpecific(folderName, 2);
-      delay(300);
-      light_down();
-      delay(300);
-      mp3.playStop();
-      if (DEBUG) Serial.println(F("SABER OFF"));
-      ls_state = false;
-      if (eeprom_flag) {
-        eeprom_flag = 0;
-        EEPROM.write(0, nowColor);   // write color in EEPROM
-        EEPROM.write(1, HUMmode);    // write mode in EEPROM
-      }
-
-
-      ////////////////////////////////////////////////////
-      //noTone(BUZZ);
-      ///////////////////////////////////////////////////
-      
+        noToneAC();
+        bzzz_flag = 0;
+        mp3.playSpecific(folderName, 2);
+        delay(300);
+        light_down();
+        delay(300);
+        mp3.playStop();
+        if (DEBUG) Serial.println(F("SABER OFF"));
+        ls_state = false;
+        if (eeprom_flag) {
+            eeprom_flag = 0;
+            EEPROM.write(0, nowColor);   // write color in EEPROM
+            EEPROM.write(1, HUMmode);    // write mode in EEPROM
+        }
+        noTone(BUZZ);
     }
     ls_chg_state = 0;
   } 
 
-  if (((millis() - humTimer) > 1000) && bzzz_flag && HUMmode) {
+  if (((millis() - humTimer) > 9000) && bzzz_flag && HUMmode) {
     mp3.playSpecific(folderName, Hum);
-
-    tone(BUZZ, 30);
     humTimer = millis();
     swing_flag = 1;
     strike_flag = 0;
   }
-
-  //updating the frequency every 3ms
+  
   long delta = millis() - bzzTimer;
-  if ((delta > 3) && bzzz_flag && !HUMmode) {
+  if ((delta > 3) && bzzz_flag && HUMmode) {
     if (strike_flag) {
       mp3.playStop();
       strike_flag = 0;
-    }
-    
+    }    
     bzzTimer = millis();
+
+    Serial.print("\n");
+    Serial.print(freq_f);
+    tone(BUZZ, (freq_f));
   }
+  
 }
 
 void randomPULSE() {
@@ -368,26 +330,25 @@ void swingTick() {
 
 void getFreq() {
   if (ls_state) {                                               // if GyverSaber is on
-    if (millis() - mpuTimer > 300) {                            
+    if (millis() - mpuTimer > 250) {                            
       accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);       
-
       // find absolute and divide on 100
-      gyroX = abs(gx / 100) - gxoffset;
-      gyroY = abs(gy / 100) - gyoffset;
-      gyroZ = abs(gz / 100) - gzoffset;
-      accelX = abs(ax / 100) - axoffset;
-      accelY = abs(ay/ 100) - ayoffset;
-      accelZ = abs(az/ 100) - azoffset;
+      gyroX = abs(gx / 100) - gx_offset;
+      gyroY = abs(gy / 100) - gy_offset;
+      gyroZ = abs(gz / 100) - gz_offset;
+      accelX = abs(ax / 100) - ax_offset;
+      accelY = abs(ay/ 100) - ay_offset;
+      accelZ = abs(az/ 100) - az_offset;
 
       // vector sum
       ACC = sq((long)accelX) + sq((long)accelY) + sq((long)accelZ);
       ACC = sqrt(ACC);
       GYR = sq((long)gyroX) + sq((long)gyroY) + sq((long)gyroZ);
       GYR = sqrt((long)GYR);
-      COMPL = ACC + GYR;
+      COMPL = GYR;
       
          // отладка работы IMU
-         Serial.print("$");
+         /*Serial.print("\n $");
          Serial.print(gyroX);
          Serial.print(" ");
          Serial.print(gyroY);
@@ -399,14 +360,20 @@ void getFreq() {
          Serial.print(accelY);
          Serial.print(" ");
          Serial.print(accelZ);
-         Serial.println(";");
+         Serial.print(" ");*/
       
       freq = (long)COMPL * COMPL / 150;                        // parabolic tone change
 
-         Serial.print(freq);
+      freq = mapbeta(freq, 0, 700, 180, 700);
+      
+      //freq = constrain(freq, 0, 60);
 
-      freq = constrain(freq, 0, 350);                          
+      if (freq_f == 600) freq_f = 180;
+      
       freq_f = freq * k + freq_f * (1 - k);                     // smooth filter
+
+      //if(ACC > STRIKE_THR) freq_f = 600;
+      
       mpuTimer = micros();                                     
     }
   }
@@ -521,4 +488,62 @@ byte voltage_measure() {
     return map(volts, 368, 340, 31, 8);
   else if (volts <= 340)
     return map(volts, 340, 260, 8, 0);
+}
+
+void getOffset() {
+
+    int n = 0;
+
+    while(n<10){
+    
+      if (millis() - mpuTimer > 250) {                            
+        accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+         
+        // find absolute and divide on 100
+        gx_offset = gx_offset + abs(gx / 100);
+        gy_offset = gy_offset + abs(gy / 100);
+        gz_offset = gx_offset + abs(gx / 100);
+        ax_offset = ax_offset + abs(ax / 100);
+        ay_offset = ay_offset + abs(ay / 100);
+        az_offset = az_offset + abs(az / 100);
+  
+        mpuTimer = millis();
+
+        n++;
+
+      }
+
+      delay(50);
+      
+    }
+        gx_offset = gx_offset / 10;
+        gy_offset = gy_offset / 10;
+        gz_offset = gz_offset / 10;
+        ax_offset = ax_offset / 10;
+        ay_offset = ay_offset / 10;
+        az_offset = az_offset / 10;
+
+        delay(250);
+
+        setAll(255, 0, 0);
+
+        delay(250);
+
+        setAll(0, 0, 0);
+
+        delay(250);
+
+        setAll(255, 0, 0);
+
+        delay(250);
+
+        setAll(0, 0, 0);
+
+        Serial.println("offset check done");
+    
+}
+
+long mapbeta(long x, long in_min, long in_max, long out_min, long out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
